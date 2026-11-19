@@ -1,0 +1,24 @@
+<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>
+<title>Agent Rule Inspector</title>
+<style>body{font:16px system-ui;max-width:82rem;margin:2.5rem auto;padding:0 1.25rem;background:#faf8f2;color:#212823}h1{font-size:clamp(1.8rem,4vw,3rem)}.providers{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,28rem),1fr));gap:1rem}section{background:white;border:1px solid #d7ded6;padding:1.25rem;border-radius:.75rem}li{margin-bottom:.8rem}code{overflow-wrap:anywhere;color:#163c35}small{display:block;color:#4c5852}a{color:#11564d}</style><h1>Agent Rule Inspector</h1>
+<p>Working directory <code>cart</code> · Target <code>cart/pricing.py</code></p><div class=providers>
+<section><h2>Codex</h2><ol>
+<li><code>AGENTS.md</code><small>startup · expected · First nonempty match in .</small></li>
+<li><code>cart/AGENTS.override.md</code><small>startup · expected · First nonempty match in cart</small></li>
+</ol>
+<p><strong>Observed paths</strong> AGENTS.md, cart/AGENTS.override.md</p>
+<p><strong>Expected at startup, missing from the supplied list</strong> none</p>
+<p><strong>Observed paths outside this prediction</strong> none</p>
+</section>
+<section><h2>Claude Code</h2><ol>
+<li><code>CLAUDE.md</code><small>startup · expected · Instruction in .</small></li>
+<li><code>AGENTS.md</code><small>startup · expected · Imported by CLAUDE.md</small></li>
+<li><code>cart/CLAUDE.md</code><small>startup · expected · Instruction in cart</small></li>
+<li><code>cart/cart-instructions.md</code><small>startup · expected · Imported by cart/CLAUDE.md</small></li>
+</ol>
+<p><strong>Observed paths</strong> AGENTS.md, CLAUDE.md</p>
+<p><strong>Expected at startup, missing from the supplied list</strong> cart/CLAUDE.md, cart/cart-instructions.md</p>
+<p><strong>Observed paths outside this prediction</strong> none</p>
+</section>
+</div><ul><li>Repository files only. User and managed rules may change the session.</li><li>Codex startup budget uses file sizes. Runtime loading can differ near the limit.</li><li>A listed file does not establish how the model applies its instructions.</li><li>Claude&#x27;s direct AGENTS.md loads may be absent from InstructionsLoaded logs.</li></ul>
+<p><a href='https://learn.chatgpt.com/docs/agent-configuration/agents-md'>Codex discovery rules</a> · <a href='https://code.claude.com/docs/en/memory'>Claude Code memory</a> · <a href='https://github.com/anthropics/claude-code/blob/main/mods/agents-md/README.md'>Claude AGENTS.md modes</a></p>
