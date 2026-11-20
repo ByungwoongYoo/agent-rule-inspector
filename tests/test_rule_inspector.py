@@ -108,6 +108,38 @@ class RuleInspectorTest(unittest.TestCase):
         self.assertEqual(rows[0]["phase"], "on read")
         self.assertTrue(all(r["phase"] != "startup" for r in rows))
 
+    def test_goose_distinguishes_config_drift_from_deferred_hints(self):
+        (self.root / ".git").mkdir()
+        (self.root / ".goosehints").write_text("root hints", encoding="utf-8")
+        (self.cart / ".goosehints").write_text("cart hints", encoding="utf-8")
+        evidence = self.root / "goose-observed.json"
+        evidence.write_text(json.dumps([".goosehints"]), encoding="utf-8")
+        report = tool.make_report(self.root, self.root, self.target, self.options(goose_loaded=evidence))
+        default = report["Goose"]
+        self.assertEqual([(row["path"], row["phase"]) for row in default["files"]],
+                         [(".goosehints", "startup"), ("AGENTS.md", "startup"),
+                          ("cart/.goosehints", "on access"), ("cart/AGENTS.md", "on access")])
+        self.assertEqual(default["expected_missing_from_list"], ["AGENTS.md"])
+        self.assertIn("Goose", tool.render_text(report))
+        configured = tool.make_report(self.root, self.root, self.target,
+                                      self.options(goose_loaded=evidence, goose_context_file=[".goosehints"]))
+        self.assertEqual(configured["Goose"]["expected_missing_from_list"], [])
+        self.assertEqual(configured["Goose"]["context_file_names"], [".goosehints"])
+
+    def test_goose_startup_depends_on_git_root_and_cwd(self):
+        no_git = tool.make_report(self.root, self.cart, self.target, self.options())
+        self.assertEqual([row["path"] for row in no_git["Goose"]["files"]], ["cart/AGENTS.md"])
+        (self.root / ".git").mkdir()
+        git_repo = tool.make_report(self.root, self.cart, self.target, self.options())
+        self.assertEqual([(row["path"], row["phase"]) for row in git_repo["Goose"]["files"]],
+                         [("AGENTS.md", "startup"), ("cart/AGENTS.md", "startup")])
+
+    def test_goose_rejects_native_request_log_as_path_list(self):
+        raw_log = self.root / "llm_request.0.jsonl"
+        raw_log.write_text('{"input":{"messages":[]}}\n', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Goose evidence must be a path list"):
+            tool.make_report(self.root, self.root, self.target, self.options(goose_loaded=raw_log))
+
     def test_example_cli_writes_html(self):
         output = self.root / "report.html"
         result = subprocess.run(

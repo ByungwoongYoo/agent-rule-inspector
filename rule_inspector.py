@@ -1,4 +1,4 @@
-"""Inspect where Codex and Claude Code look for repository instructions."""
+"""Inspect where Codex, Claude Code, and Goose look for repository instructions."""
 
 from __future__ import annotations
 
@@ -12,6 +12,9 @@ from pathlib import Path
 CODEX_DOC = "https://learn.chatgpt.com/docs/agent-configuration/agents-md"
 CLAUDE_DOC = "https://code.claude.com/docs/en/memory"
 CLAUDE_PLUGIN = "https://github.com/anthropics/claude-code/blob/main/mods/agents-md/README.md"
+GOOSE_DOC = "https://goose-docs.ai/docs/guides/context-engineering/using-goosehints/"
+GOOSE_CONTEXT_FILES = (".goosehints", "AGENTS.md")
+PROVIDERS = ("Codex", "Claude Code", "Goose")
 IMPORT = re.compile(r"(?<!\S)@([^\s\x60<>]+)")
 FENCE = re.compile(r"^\s{0,3}(" + chr(96) + r"{3,}|~{3,})")
 MAX_CLAUDE_FILE = 4 * 1024 * 1024
@@ -187,7 +190,31 @@ def claude_rules(root: Path, cwd: Path, target: Path, mode: str) -> tuple[list[R
     return selected, notes
 
 
-def loaded_paths(evidence: Path, root: Path) -> tuple[set[str], int]:
+def goose_rules(root: Path, cwd: Path, target: Path, names: list[str] | tuple[str, ...]) -> list[Rule]:
+    git_root = next((directory for directory in (cwd, *cwd.parents)
+                     if (directory / ".git").exists()), None)
+    if git_root is None:
+        startup_dirs = [cwd]
+    else:
+        startup_dirs = chain(git_root if within(git_root, root) else root, cwd)
+    target_dirs = chain(cwd, target.parent)[1:] if within(target.parent, cwd) else []
+    selected = []
+    for directories, phase, state in (
+        (startup_dirs, "startup", "expected"),
+        (target_dirs, "on access", "check target access"),
+    ):
+        for directory in directories:
+            for name in names:
+                entry = instruction(directory, name, root)
+                if entry is not None:
+                    alias, path = entry
+                    selected.append(Rule(relative(alias, root), phase,
+                                         f"Context file in {relative(directory, root)}",
+                                         path.stat().st_size, state))
+    return selected
+
+
+def loaded_paths(evidence: Path, root: Path, *, allow_claude_events: bool = True) -> tuple[set[str], int]:
     if evidence.stat().st_size > MAX_EVIDENCE:
         raise ValueError("Observed path list exceeds 512 KiB.")
     raw = evidence.read_text(encoding="utf-8-sig").lstrip()
@@ -202,6 +229,8 @@ def loaded_paths(evidence: Path, root: Path) -> tuple[set[str], int]:
             if not value:
                 continue
             if value.startswith("{"):
+                if not allow_claude_events:
+                    raise ValueError("Goose evidence must be a path list, not a raw session or request log.")
                 event = json.loads(value)
                 path = event.get("file_path")
                 if event.get("hook_event_name") == "InstructionsLoaded" and isinstance(path, str):
@@ -220,10 +249,11 @@ def loaded_paths(evidence: Path, root: Path) -> tuple[set[str], int]:
     return observed, excluded
 
 
-def evidence_rows(rows: list[Rule], evidence: Path | None, root: Path) -> dict:
+def evidence_rows(rows: list[Rule], evidence: Path | None, root: Path,
+                  *, allow_claude_events: bool = True) -> dict:
     result = {"files": [asdict(rule) for rule in rows], "evidence_provided": evidence is not None}
     if evidence is not None:
-        loaded, excluded = loaded_paths(evidence, root)
+        loaded, excluded = loaded_paths(evidence, root, allow_claude_events=allow_claude_events)
         predicted = {rule.path for rule in rows}
         startup = {rule.path for rule in rows if rule.phase == "startup" and rule.state == "expected"}
         result.update(observed=sorted(loaded), expected_missing_from_list=sorted(startup - loaded),
@@ -242,9 +272,14 @@ def make_report(root: Path, cwd: Path, target: Path, options: argparse.Namespace
         raise ValueError("Codex byte limit must be between 0 and 1048576.")
     if any(Path(n).name != n or n in (".", "..") for n in options.codex_fallback):
         raise ValueError("Codex fallback names must be bare file names.")
+    goose_names = tuple(dict.fromkeys(getattr(options, "goose_context_file", None) or GOOSE_CONTEXT_FILES))
+    if any(not name or "/" in name or "\\" in name or Path(name).name != name or name in (".", "..")
+           for name in goose_names):
+        raise ValueError("Goose context names must be bare file names.")
 
     codex = codex_rules(root, cwd, target, options.codex_bytes, options.codex_fallback)
     claude, notes = claude_rules(root, cwd, target, options.claude_mode)
+    goose = goose_rules(root, cwd, target, goose_names)
     return {
         "working_directory": relative(cwd, root),
         "target": relative(target, root),
@@ -252,11 +287,16 @@ def make_report(root: Path, cwd: Path, target: Path, options: argparse.Namespace
         "claude_mode": options.claude_mode,
         "Codex": evidence_rows(codex, options.codex_loaded, root),
         "Claude Code": evidence_rows(claude, options.claude_loaded, root),
+        "Goose": {
+            **evidence_rows(goose, getattr(options, "goose_loaded", None), root, allow_claude_events=False),
+            "context_file_names": list(goose_names),
+        },
         "notes": [
             "Repository files only. User and managed rules may change the session.",
             "Codex startup budget uses file sizes. Runtime loading can differ near the limit.",
             "A listed file does not establish how the model applies its instructions.",
             "Claude's direct AGENTS.md loads may be absent from InstructionsLoaded logs.",
+            "Goose predictions cover direct context files. Imports, ignored files and access-triggered loads need request evidence.",
             *notes,
         ],
     }
@@ -267,7 +307,7 @@ def render_text(report: dict) -> str:
         f"Working directory: {report['working_directory']}",
         f"Target: {report['target']}",
     ]
-    for provider in ("Codex", "Claude Code"):
+    for provider in PROVIDERS:
         data = report[provider]
         result.extend(["", provider])
         for row in data["files"]:
@@ -296,14 +336,14 @@ def render_html(report: dict) -> str:
         "<title>Agent Rule Inspector</title>",
         "<style>body{font:16px system-ui;max-width:82rem;margin:2.5rem auto;padding:0 1.25rem;"
         "background:#faf8f2;color:#212823}h1{font-size:clamp(1.8rem,4vw,3rem)}"
-        ".providers{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,28rem),1fr));gap:1rem}"
+        ".providers{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,25rem),1fr));gap:1rem}"
         "section{background:white;border:1px solid #d7ded6;padding:1.25rem;border-radius:.75rem}"
         "li{margin-bottom:.8rem}code{overflow-wrap:anywhere;color:#163c35}small{display:block;color:#4c5852}"
         "a{color:#11564d}</style><h1>Agent Rule Inspector</h1>",
         f"<p>Working directory <code>{e(report['working_directory'])}</code> · "
         f"Target <code>{e(report['target'])}</code></p><div class=providers>",
     ]
-    for provider in ("Codex", "Claude Code"):
+    for provider in PROVIDERS:
         data = report[provider]
         parts.append(f"<section><h2>{provider}</h2><ol>")
         for row in data["files"]:
@@ -324,7 +364,8 @@ def render_html(report: dict) -> str:
     parts.append("</div><ul>" + "".join(f"<li>{e(note)}</li>" for note in report["notes"]) + "</ul>")
     parts.append(f"<p><a href='{CODEX_DOC}'>Codex discovery rules</a> · "
                  f"<a href='{CLAUDE_DOC}'>Claude Code memory</a> · "
-                 f"<a href='{CLAUDE_PLUGIN}'>Claude AGENTS.md modes</a></p>")
+                 f"<a href='{CLAUDE_PLUGIN}'>Claude AGENTS.md modes</a> · "
+                 f"<a href='{GOOSE_DOC}'>Goose context files</a></p>")
     return "\n".join(parts)
 
 
@@ -339,6 +380,8 @@ def main(argv: list[str] | None = None) -> int:
                         default="claude-or-agents")
     parser.add_argument("--codex-loaded", type=Path, help="Observed paths, one per line or a JSON array.")
     parser.add_argument("--claude-loaded", type=Path, help="Observed paths or InstructionsLoaded JSONL.")
+    parser.add_argument("--goose-context-file", action="append", help="Override Goose context filenames. Repeat per filename.")
+    parser.add_argument("--goose-loaded", type=Path, help="Observed paths from a Goose request, as a path list or JSON array.")
     parser.add_argument("--json", action="store_true", help="Write machine-readable output.")
     parser.add_argument("--html", type=Path, help="Save a local standalone HTML report.")
     args = parser.parse_args(argv)
